@@ -16,7 +16,7 @@ class RefundInvestigationAgent:
         self.tools = tools or ToolRegistry()
 
     def investigate(self, order_id: str) -> dict:
-        """Gather evidence and produce a decision for human review."""
+        """Gather order, refund, warehouse, and policy evidence."""
 
         if not isinstance(order_id, str) or not order_id.strip():
             raise ValueError("A valid order ID is required.")
@@ -68,14 +68,27 @@ class RefundInvestigationAgent:
                 )
             )
 
-        # Retrieve the policy applicable on the investigation date.
-        policy_result = self.tools.get_policy(date.today().isoformat())
+        # Retrieve policies applicable on the investigation date.
+        investigation_date = date.today().isoformat()
+
+        policy_result = self.tools.get_policy(
+            investigation_date,
+            title="Standard Refund Policy",
+        )
+
+        addendum_result = self.tools.get_policy(
+            investigation_date,
+            title="Refund Operations Addendum",
+        )
+
+        policy_conflict = any(
+            result.get("conflict")
+            or result.get("conflicting_document_ids")
+            for result in (policy_result, addendum_result)
+        )
 
         policy_id = None
-        policy_conflict = bool(
-            policy_result.get("conflict")
-            or policy_result.get("conflicting_document_ids")
-        )
+        addendum_id = None
 
         if policy_result.get("found") and not policy_conflict:
             policy = policy_result["policy"]
@@ -89,19 +102,50 @@ class RefundInvestigationAgent:
                 )
             )
 
-        # Never make a definitive recommendation without reliable policy
-        # evidence. A refund record alone does not prove eligibility.
-        if policy_conflict or not policy_id:
+        if addendum_result.get("found") and not policy_conflict:
+            addendum = addendum_result["policy"]
+            addendum_id = addendum["document_id"]
+
+            evidence.append(
+                EvidenceItem(
+                    source="policy_documents",
+                    reference_id=addendum_id,
+                    detail=addendum["document_text"],
+                )
+            )
+
+        # Escalate when either required policy is missing or conflicting.
+        if (
+            policy_conflict
+            or not policy_id
+            or not addendum_id
+        ):
             recommendation = "escalate"
-            missing_information = [
-                "A verified, authoritative refund policy"
-            ]
+            missing_information = []
+
+            if not policy_id:
+                missing_information.append(
+                    "A verified, authoritative Standard Refund Policy"
+                )
+
+            if not addendum_id:
+                missing_information.append(
+                    "A verified, authoritative Refund Operations Addendum"
+                )
+
+            if policy_conflict:
+                missing_information.append(
+                    "Resolution of conflicting policy evidence"
+                )
+
         elif not refunds:
             recommendation = "request_more_information"
             missing_information = [
                 "A refund record for this order"
             ]
+
         else:
+            # A refund request alone does not establish eligibility.
             recommendation = "request_more_information"
             missing_information = [
                 "Complete refund eligibility assessment",
@@ -112,11 +156,16 @@ class RefundInvestigationAgent:
             order_id=order_id,
             refund_id=refunds[0]["refund_id"] if refunds else None,
             recommendation=recommendation,
-            confidence=0.8 if policy_id and not policy_conflict else 0.3,
+            confidence=(
+                0.8
+                if policy_id and addendum_id and not policy_conflict
+                else 0.3
+            ),
             reasoning=(
                 "The investigation gathered order, refund, warehouse, "
-                "and policy evidence. A definitive refund decision is "
-                "not made by this workflow. Human review is required."
+                "and policy evidence. Missing or conflicting policy "
+                "evidence requires escalation. No refund is executed, "
+                "and human review is required."
             ),
             evidence=evidence,
             missing_information=missing_information,
