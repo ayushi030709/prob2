@@ -1,4 +1,6 @@
 
+from datetime import date
+
 from refund_war_room.schemas import EvidenceItem, RefundDecision
 from refund_war_room.tools import ToolRegistry
 from refund_war_room.verifier import (
@@ -14,7 +16,7 @@ class RefundInvestigationAgent:
         self.tools = tools or ToolRegistry()
 
     def investigate(self, order_id: str) -> dict:
-        """Gather order, refund, warehouse, and policy evidence."""
+        """Gather evidence and produce a decision for human review."""
 
         if not isinstance(order_id, str) or not order_id.strip():
             raise ValueError("A valid order ID is required.")
@@ -66,12 +68,19 @@ class RefundInvestigationAgent:
                 )
             )
 
-        policy_result = self.tools.get_policy("2026-10-24")
+        # Retrieve the policy applicable on the investigation date.
+        policy_result = self.tools.get_policy(date.today().isoformat())
 
         policy_id = None
-        if policy_result.get("found"):
+        policy_conflict = bool(
+            policy_result.get("conflict")
+            or policy_result.get("conflicting_document_ids")
+        )
+
+        if policy_result.get("found") and not policy_conflict:
             policy = policy_result["policy"]
             policy_id = policy["document_id"]
+
             evidence.append(
                 EvidenceItem(
                     source="policy_documents",
@@ -80,11 +89,19 @@ class RefundInvestigationAgent:
                 )
             )
 
-        if not refunds:
+        # Never make a definitive recommendation without reliable policy
+        # evidence. A refund record alone does not prove eligibility.
+        if policy_conflict or not policy_id:
+            recommendation = "escalate"
+            missing_information = [
+                "A verified, authoritative refund policy"
+            ]
+        elif not refunds:
             recommendation = "request_more_information"
-            missing_information = ["A refund record for this order"]
+            missing_information = [
+                "A refund record for this order"
+            ]
         else:
-            # A pending or requested refund is not proof of eligibility.
             recommendation = "request_more_information"
             missing_information = [
                 "Complete refund eligibility assessment",
@@ -95,11 +112,11 @@ class RefundInvestigationAgent:
             order_id=order_id,
             refund_id=refunds[0]["refund_id"] if refunds else None,
             recommendation=recommendation,
-            confidence=0.8 if policy_id else 0.3,
+            confidence=0.8 if policy_id and not policy_conflict else 0.3,
             reasoning=(
                 "The investigation gathered order, refund, warehouse, "
                 "and policy evidence. A definitive refund decision is "
-                "not made by this initial workflow."
+                "not made by this workflow. Human review is required."
             ),
             evidence=evidence,
             missing_information=missing_information,
@@ -107,12 +124,15 @@ class RefundInvestigationAgent:
             requires_human_review=True,
         )
 
-        known_evidence_ids = {item.reference_id for item in evidence}
+        known_evidence_ids = {
+            item.reference_id for item in evidence
+        }
 
         verification: VerificationResult = verify_refund_decision(
             decision=decision,
             authoritative_policy_id=policy_id,
             known_evidence_ids=known_evidence_ids,
+            policy_conflict=policy_conflict,
         )
 
         return {
