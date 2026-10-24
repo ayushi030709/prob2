@@ -1,4 +1,5 @@
 
+import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,15 @@ CREATE TABLE IF NOT EXISTS policy_documents (
     document_text TEXT NOT NULL,
     content_hash TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS tool_audit_log (
+    audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tool_name TEXT NOT NULL,
+    action TEXT NOT NULL,
+    target_id TEXT,
+    details TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -98,7 +108,6 @@ def seed_database(
     database_path: str | Path | None = None,
 ) -> None:
     """Insert deterministic synthetic data for development and testing."""
-    import hashlib
 
     sellers = [
         ("SELLER-101", "Northstar Retail", "+910000000101", 1),
@@ -280,6 +289,7 @@ def get_table_counts(
         "support_tickets",
         "warehouse_notes",
         "policy_documents",
+        "tool_audit_log",
     )
 
     with get_connection(database_path) as connection:
